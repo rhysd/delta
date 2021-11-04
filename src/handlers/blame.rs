@@ -1,7 +1,9 @@
 use chrono::{DateTime, FixedOffset};
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::borrow::Cow;
 
+use crate::ansi::measure_text_width;
 use crate::color;
 use crate::config;
 use crate::delta::{self, State, StateMachine};
@@ -16,7 +18,12 @@ impl<'a> StateMachine<'a> {
     pub fn handle_blame_line(&mut self) -> std::io::Result<bool> {
         let mut handled_line = false;
         self.painter.emit()?;
-        if matches!(self.state, State::Unknown | State::Blame(_)) {
+        let (previous_line_commit, try_parse) = match &self.state {
+            State::Blame(commit) => (Some(commit.as_str()), true),
+            State::Unknown => (None, true),
+            _ => (None, false),
+        };
+        if try_parse {
             if let Some(blame) =
                 parse_git_blame_line(&self.line, &self.config.blame_timestamp_format)
             {
@@ -40,11 +47,10 @@ impl<'a> StateMachine<'a> {
                     &*BLAME_PLACEHOLDER_REGEX,
                     false,
                 );
-                write!(
-                    self.painter.writer,
-                    "{}",
-                    style.paint(format_blame_metadata(&format_data, &blame, self.config))
-                )?;
+                let is_repeat = previous_line_commit == Some(blame.commit);
+                let blame_line =
+                    format_blame_metadata(&format_data, &blame, is_repeat, self.config);
+                write!(self.painter.writer, "{}", style.paint(blame_line))?;
 
                 // Emit syntax-highlighted code
                 if matches!(self.state, State::Unknown) {
@@ -52,8 +58,8 @@ impl<'a> StateMachine<'a> {
                         self.painter.set_syntax(Some(lang));
                         self.painter.set_highlighter();
                     }
-                    self.state = State::Blame(blame.commit.to_owned());
                 }
+                self.state = State::Blame(blame.commit.to_owned());
                 self.painter.syntax_highlight_and_paint_line(
                     blame.code,
                     style,
@@ -139,6 +145,7 @@ lazy_static! {
 pub fn format_blame_metadata(
     format_data: &[format::FormatStringPlaceholderData],
     blame: &BlameLine,
+    is_repeat: bool,
     config: &config::Config,
 ) -> String {
     let mut s = String::new();
@@ -153,16 +160,22 @@ pub fn format_blame_metadata(
         let width = placeholder.width.unwrap_or(15);
 
         let pad = |s| format::pad(s, width, alignment_spec);
-        match placeholder.placeholder {
-            Some(Placeholder::Str("timestamp")) => s.push_str(&pad(
-                &chrono_humanize::HumanTime::from(blame.time).to_string(),
+        let field = match placeholder.placeholder {
+            Some(Placeholder::Str("timestamp")) => Some(Cow::from(
+                chrono_humanize::HumanTime::from(blame.time).to_string(),
             )),
-            Some(Placeholder::Str("author")) => s.push_str(&pad(blame.author)),
-            Some(Placeholder::Str("commit")) => {
-                s.push_str(&pad(&delta::format_raw_line(blame.commit, config)))
-            }
-            None => {}
+            Some(Placeholder::Str("author")) => Some(Cow::from(blame.author)),
+            Some(Placeholder::Str("commit")) => Some(delta::format_raw_line(blame.commit, config)),
+            None => None,
             _ => unreachable!("Unexpected `git blame` input"),
+        };
+        if let Some(field) = field {
+            let field = pad(&field);
+            if is_repeat {
+                s.push_str(&" ".repeat(measure_text_width(&field)));
+            } else {
+                s.push_str(&field)
+            }
         }
         suffix = placeholder.suffix.as_str();
     }
