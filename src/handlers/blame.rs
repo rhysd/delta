@@ -18,10 +18,12 @@ impl<'a> StateMachine<'a> {
     pub fn handle_blame_line(&mut self) -> std::io::Result<bool> {
         let mut handled_line = false;
         self.painter.emit()?;
-        let (previous_line_commit, try_parse) = match &self.state {
-            State::Blame(commit) => (Some(commit.as_str()), true),
-            State::Unknown => (None, true),
-            _ => (None, false),
+        let (previous_line_commit, mut repeat_blame_line, try_parse) = match &mut self.state {
+            State::Blame(commit, repeat_blame_line) => {
+                (Some(commit.as_str()), repeat_blame_line.take(), true)
+            }
+            State::Unknown => (None, None, true),
+            _ => (None, None, false),
         };
         if try_parse {
             if let Some(blame) =
@@ -48,8 +50,24 @@ impl<'a> StateMachine<'a> {
                     false,
                 );
                 let is_repeat = previous_line_commit == Some(blame.commit);
-                let blame_line =
-                    format_blame_metadata(&format_data, &blame, is_repeat, self.config);
+                let blame_line = match (is_repeat, &repeat_blame_line) {
+                    (false, _) => Cow::from(format_blame_metadata(
+                        &format_data,
+                        &blame,
+                        false,
+                        self.config,
+                    )),
+                    (true, None) => {
+                        repeat_blame_line = Some(format_blame_metadata(
+                            &format_data,
+                            &blame,
+                            true,
+                            self.config,
+                        ));
+                        Cow::from(repeat_blame_line.as_ref().unwrap())
+                    }
+                    (true, Some(repeat_blame_line)) => Cow::from(repeat_blame_line),
+                };
                 write!(self.painter.writer, "{}", style.paint(blame_line))?;
 
                 // Emit syntax-highlighted code
@@ -59,7 +77,7 @@ impl<'a> StateMachine<'a> {
                         self.painter.set_highlighter();
                     }
                 }
-                self.state = State::Blame(blame.commit.to_owned());
+                self.state = State::Blame(blame.commit.to_owned(), repeat_blame_line.to_owned());
                 self.painter.syntax_highlight_and_paint_line(
                     blame.code,
                     style,

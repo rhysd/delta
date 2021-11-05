@@ -22,7 +22,7 @@ pub enum State {
     HunkPlus(Option<String>), // In hunk; added line (raw_line)
     SubmoduleLog, // In a submodule section, with gitconfig diff.submodule = log
     SubmoduleShort(String), // In a submodule section, with gitconfig diff.submodule = short
-    Blame(String), // In a line of `git blame` output.
+    Blame(String, Option<String>), // In a line of `git blame` output (commit, repeat_blame_line).
     Unknown,
     // The following elements are created when a line is wrapped to display it:
     HunkZeroWrapped,  // Wrapped unchanged line
